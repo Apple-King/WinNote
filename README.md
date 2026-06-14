@@ -32,6 +32,58 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## 打包发布
+
+### 安装 PyInstaller
+
+```bash
+pip install pyinstaller
+```
+
+### 打包命令
+
+**方式一：使用 spec 文件打包（推荐）**
+
+```bash
+pyinstaller main.spec
+```
+
+**方式二：直接命令行打包**
+
+```bash
+pyinstaller --onefile --windowed --add-data "notes_data.json;." main.py
+```
+
+### 打包产物
+
+打包完成后，exe 文件位于 `dist/` 文件夹：
+
+```
+Winnote/
+├── dist/
+│   └── main.exe          # 可分发的 exe 文件
+├── build/                # 临时构建文件（可删除）
+├── main.py               # 源代码
+├── main.spec             # 打包配置文件
+├── notes_data.json        # 数据文件
+└── requirements.txt       # 依赖列表
+```
+
+### 注意事项
+
+1. **首次运行**：打包后的 exe 首次运行时会自动在同目录生成 `notes_data.json`
+2. **数据存储**：笔记数据保存在 exe 所在目录的 `notes_data.json` 文件中
+3. **清理临时文件**：打包完成后可删除 `build` 和 `__pycache__` 文件夹
+4. **多语言支持**：打包后的 exe 完整包含中英文界面
+
+### 常见问题
+
+**Q: 打包后笔记无法保存？**
+A: 请确保 exe 有写入权限，数据文件会保存在 exe 所在目录。
+
+**Q: 如何查看打包错误信息？**
+A: 去掉 `--windowed` 参数重新打包，会显示控制台窗口。
+
 ## 界面预览
 
 应用包含以下主要组件：

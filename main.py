@@ -9,11 +9,12 @@ import json
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QListWidget, QListWidgetItem, QTextEdit, QSplitter,
-    QMessageBox, QLineEdit, QLabel, QScrollArea, QStyleFactory, QFrame, QPushButton, QSizePolicy
+    QListWidget, QListWidgetItem, QTextEdit,
+    QLineEdit, QLabel, QStyleFactory, QPushButton, QSizePolicy
 )
-from PyQt6.QtGui import QTextCharFormat, QAction, QFont, QTextDocument
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QTextCharFormat, QAction, QFont, QTextDocument, QIcon, QPixmap, QImage
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QBuffer, QIODevice
+from PIL import Image, ImageDraw
 
 # =================================================================
 # 常量定义
@@ -32,11 +33,11 @@ COLORS = {
 }
 
 FONTS = {
-    'title': ('SF Pro Text', 14, QFont.Weight.DemiBold),
-    'preview': ('SF Pro Text', 11, QFont.Weight.Normal),
-    'date': ('SF Pro Text', 11, QFont.Weight.Normal),
-    'editor': ('SF Pro Text', 15, QFont.Weight.Normal),
-    'editor_title': ('SF Pro Display', 28, QFont.Weight.Bold),
+    'title': ('Times New Roman, 楷体', 14, QFont.Weight.DemiBold),
+    'preview': ('Times New Roman, 楷体', 11, QFont.Weight.Normal),
+    'date': ('Times New Roman, 楷体', 11, QFont.Weight.Normal),
+    'editor': ('Times New Roman, 楷体', 15, QFont.Weight.Normal),
+    'editor_title': ('Times New Roman, 楷体', 28, QFont.Weight.Bold),
     'toolbar': ('Arial', 16, QFont.Weight.Bold),
 }
 
@@ -45,6 +46,9 @@ SIDEBAR_WIDTH = 300
 TOOLBAR_HEIGHT = 44
 BUTTON_SIZE = 36
 PREVIEW_MAX_LENGTH = 8
+
+# 软件版本
+VERSION = "1.0.0"
 
 # =================================================================
 # 翻译系统
@@ -64,6 +68,8 @@ TRANSLATIONS = {
         'menu_new_note': 'New Note',
         'menu_delete': 'Delete',
         'menu_language': 'Language',
+        'menu_help': 'Help',
+        'menu_about': 'About WinNote',
         
         # 占位符
         'placeholder_title': 'Title',
@@ -72,6 +78,15 @@ TRANSLATIONS = {
         
         # 其他
         'untitled': 'Untitled',
+        'about_title': 'About WinNote',
+        'about_description': 'A macOS Notes-style note-taking application for Windows.',
+        'about_version': 'Version',
+        'about_author': 'Developed with PyQt6',
+        
+        # 工具栏提示
+        'tooltip_bold': 'Bold (Ctrl+B)',
+        'tooltip_italic': 'Italic (Ctrl+I)',
+        'tooltip_strikethrough': 'Strikethrough (Ctrl+S)',
     },
     'zh': {
         # 菜单
@@ -79,6 +94,8 @@ TRANSLATIONS = {
         'menu_new_note': '新建笔记',
         'menu_delete': '删除',
         'menu_language': '语言',
+        'menu_help': '帮助',
+        'menu_about': '关于 WinNote',
         
         # 占位符
         'placeholder_title': '标题',
@@ -87,6 +104,15 @@ TRANSLATIONS = {
         
         # 其他
         'untitled': '无标题',
+        'about_title': '关于 WinNote',
+        'about_description': '一个基于 macOS Notes 风格的 Windows 笔记应用。',
+        'about_version': '版本',
+        'about_author': '使用 PyQt6 开发',
+        
+        # 工具栏提示
+        'tooltip_bold': '加粗 (Ctrl+B)',
+        'tooltip_italic': '斜体 (Ctrl+I)',
+        'tooltip_strikethrough': '删除线 (Ctrl+S)',
     }
 }
 
@@ -413,10 +439,14 @@ class NotesApp(QMainWindow):
         super().__init__()
         self.notes = []
         self.current_note_index = -1
-        self.notes_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), 
-            "notes_data.json"
-        )
+        # 获取应用程序所在目录（兼容打包后的exe）
+        if getattr(sys, 'frozen', False):
+            # 打包后的 exe，使用 exe 所在目录
+            app_dir = os.path.dirname(sys.executable)
+        else:
+            # 开发环境
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+        self.notes_file = os.path.join(app_dir, "notes_data.json")
         self.init_ui()
         self.load_notes()
     
@@ -426,9 +456,12 @@ class NotesApp(QMainWindow):
     
     def init_ui(self):
         """初始化用户界面"""
-        self.setWindowTitle("Notes")
+        self.setWindowTitle("WinNote")
         self.setGeometry(100, 100, 1200, 800)
         QApplication.setStyle(QStyleFactory.create("macOS"))
+        
+        # 设置窗口图标
+        self._set_window_icon()
         
         # 中央部件
         self.central_widget = QWidget()
@@ -443,6 +476,51 @@ class NotesApp(QMainWindow):
         self._create_sidebar()
         self._create_editor_area()
         self.create_menu_bar()
+    
+    def _set_window_icon(self):
+        """设置窗口图标 - 生成一个简洁的笔记图标"""
+        try:
+            # 创建图标
+            icon_size = 64
+            icon = Image.new('RGBA', (icon_size, icon_size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(icon)
+            
+            # 绘制圆角矩形背景 (macOS 灰色风格)
+            margin = 4
+            draw.rounded_rectangle(
+                [margin, margin, icon_size - margin - 1, icon_size - margin - 1],
+                radius=12,
+                fill=(60, 60, 62, 255)  # 深灰色 accent
+            )
+            
+            # 绘制"便签"图案 - 简化的线条表示文字
+            line_color = (255, 255, 255, 230)
+            line_start_y = 22
+            line_spacing = 8
+            for i in range(3):
+                line_width = 28 if i == 0 else 24  # 第一行稍长
+                draw.line(
+                    [(16, line_start_y + i * line_spacing), 
+                     (16 + line_width, line_start_y + i * line_spacing)],
+                    fill=line_color,
+                    width=3
+                )
+            
+            # 转换为 Qt 图标
+            buffer = QBuffer()
+            buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+            icon.save(buffer, format='PNG')
+            buffer.close()
+            
+            qicon = QIcon()
+            qicon.addPixmap(QPixmap.fromImage(QImage.fromData(buffer.data())))
+            
+            # 设置应用图标和窗口图标
+            QApplication.setWindowIcon(qicon)
+            self.setWindowIcon(qicon)
+            
+        except Exception as e:
+            print(f"图标设置失败: {e}")
     
     def _create_sidebar(self):
         """创建左侧边栏"""
@@ -514,6 +592,26 @@ class NotesApp(QMainWindow):
         # 按钮容器
         button_container = QWidget(self.toolbar)
         button_container.setFixedHeight(36)
+        button_container.setStyleSheet("""
+            QWidget {
+                background-color: transparent;
+                border: none;
+            }
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 6px;
+                color: #3a3a3c;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #e5e5ea;
+            }
+            QPushButton:checked {
+                background-color: #3a3a3c;
+                color: white;
+            }
+        """)
         button_layout = QHBoxLayout(button_container)
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(4)
@@ -543,7 +641,15 @@ class NotesApp(QMainWindow):
         btn.setFixedSize(BUTTON_SIZE, BUTTON_SIZE)
         btn.setCheckable(True)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(STYLES['toolbar_btn'])
+        # 样式由父容器设置，这里不再单独设置
+        
+        # 设置鼠标悬停提示
+        if format_type == 'bold':
+            btn.setToolTip(tr('tooltip_bold'))
+        elif format_type == 'italic':
+            btn.setToolTip(tr('tooltip_italic'))
+        elif format_type == 'strikethrough':
+            btn.setToolTip(tr('tooltip_strikethrough'))
         
         # 特殊样式
         if format_type == 'italic':
@@ -630,6 +736,83 @@ class NotesApp(QMainWindow):
             action.triggered.connect(lambda checked, code=lang_code: self.change_language(code))
             language_menu.addAction(action)
             self.language_group.append(action)
+        
+        # 帮助菜单
+        help_menu = menubar.addMenu(tr('menu_help'))
+        
+        about_action = QAction(tr('menu_about'), self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+    
+    def show_about(self):
+        """显示关于对话框"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr('about_title'))
+        dialog.setFixedSize(400, 200)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #f2f2f7;
+            }
+            QLabel {
+                background-color: transparent;
+                padding: 5px;
+            }
+        """)
+        
+        layout = QVBoxLayout(dialog)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # 应用名称
+        title_label = QLabel("WinNote")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 24px;
+                font-weight: bold;
+                color: #1c1c1e;
+                background-color: transparent;
+            }
+        """)
+        layout.addWidget(title_label)
+        
+        # 版本号
+        version_label = QLabel(f"{tr('about_version')} {VERSION}")
+        version_label.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                color: #8e8e93;
+                background-color: transparent;
+            }
+        """)
+        layout.addWidget(version_label)
+        
+        # 描述
+        desc_label = QLabel(tr('about_description'))
+        desc_label.setStyleSheet("""
+            QLabel {
+                font-size: 13px;
+                color: #3a3a3c;
+                background-color: transparent;
+                padding-top: 15px;
+            }
+        """)
+        desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(desc_label)
+        
+        # 作者信息
+        author_label = QLabel(tr('about_author'))
+        author_label.setStyleSheet("""
+            QLabel {
+                font-size: 12px;
+                color: #aeaeb2;
+                background-color: transparent;
+                padding-top: 10px;
+            }
+        """)
+        layout.addWidget(author_label)
+        
+        dialog.exec()
     
     def change_language(self, lang_code):
         """切换语言"""
@@ -644,6 +827,11 @@ class NotesApp(QMainWindow):
         
         # 更新标题输入框placeholder
         self.title_input.setPlaceholderText(tr('placeholder_title'))
+        
+        # 更新工具栏提示
+        self.bold_btn.setToolTip(tr('tooltip_bold'))
+        self.italic_btn.setToolTip(tr('tooltip_italic'))
+        self.strikethrough_btn.setToolTip(tr('tooltip_strikethrough'))
         
         # 更新笔记列表
         self.update_notes_list()
@@ -667,6 +855,9 @@ class NotesApp(QMainWindow):
             self.strikethrough_btn.setChecked(checked)
         
         self.editor.mergeCurrentCharFormat(format)
+        # 恢复编辑器焦点，避免光标消失
+        self.editor.setFocus()
+        self.editor.viewport().update()
     
     def update_format_indicators(self, format):
         """更新格式指示器状态"""
@@ -726,7 +917,7 @@ class NotesApp(QMainWindow):
         self.title_input.setText("")
         self.editor.setPlainText("")
         self.title_input.setFocus()
-        self.date_label.setText(now.strftime("%B %d, %Y at %#I:%M %p").strip())
+        self.date_label.setText(self.format_date(now.isoformat()))
     
     def select_note(self, item):
         """选择笔记"""
@@ -805,6 +996,8 @@ class NotesApp(QMainWindow):
         
         if filtered_notes:
             self.notes_list.setCurrentRow(0)
+            # 触发选中笔记，更新编辑器内容和日期
+            self.select_note(self.notes_list.item(0))
     
     def update_notes_list_item(self, index):
         """更新单个列表项"""
