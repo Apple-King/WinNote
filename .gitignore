@@ -17,6 +17,8 @@ build/
 # 数据文件（笔记数据）
 notes_data.json
 notes_data.json.bak
+notes.db
+notes.db-journal
 
 # 日志文件
 *.log

@@ -6,6 +6,7 @@
 import sys
 import os
 import json
+import sqlite3
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -446,9 +447,61 @@ class NotesApp(QMainWindow):
         else:
             # 开发环境
             app_dir = os.path.dirname(os.path.abspath(__file__))
-        self.notes_file = os.path.join(app_dir, "notes_data.json")
+        self.app_dir = app_dir
+        self.db_path = os.path.join(app_dir, "notes.db")
+        self._init_database()
         self.init_ui()
         self.load_notes()
+    
+    # ----------------------------------------------------------------
+    # 数据库初始化
+    # ----------------------------------------------------------------
+    
+    def _init_database(self):
+        """初始化数据库并自动迁移JSON数据"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # 创建表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        ''')
+        
+        # 检查是否需要迁移JSON数据
+        cursor.execute("SELECT COUNT(*) FROM notes")
+        count = cursor.fetchone()[0]
+        
+        if count == 0:
+            # 尝试从JSON文件迁移数据
+            json_path = os.path.join(self.app_dir, "notes_data.json")
+            if os.path.exists(json_path):
+                try:
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        old_notes = json.load(f)
+                    
+                    for note in old_notes:
+                        cursor.execute('''
+                            INSERT INTO notes (title, content, created_at, updated_at)
+                            VALUES (?, ?, ?, ?)
+                        ''', (
+                            note.get("title", ""),
+                            note.get("content", ""),
+                            note.get("created_at", datetime.now().isoformat()),
+                            note.get("updated_at", datetime.now().isoformat())
+                        ))
+                    
+                    conn.commit()
+                    print("Data migrated from JSON to SQLite successfully!")
+                except Exception as e:
+                    print(f"Error migrating data: {e}")
+        
+        conn.close()
     
     # ----------------------------------------------------------------
     # UI初始化
@@ -903,8 +956,20 @@ class NotesApp(QMainWindow):
         """创建新笔记"""
         now = datetime.now()
         
+        # 插入数据库
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO notes (title, content, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+        ''', ("", "", now.isoformat(), now.isoformat()))
+        
+        note_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        
         note = {
-            "id": now.timestamp(),
+            "id": note_id,
             "title": "",
             "content": "",
             "created_at": now.isoformat(),
@@ -933,23 +998,59 @@ class NotesApp(QMainWindow):
     def update_title(self, text):
         """更新标题"""
         if self.current_note_index >= 0 and self.current_note_index < len(self.notes):
-            self.notes[self.current_note_index]["title"] = text
-            self.notes[self.current_note_index]["updated_at"] = datetime.now().isoformat()
-            self.update_notes_list_item(self.current_note_index)
-            self.save_notes()
-    
+            # 只有内容真正变化时才更新时间
+            if text != self.notes[self.current_note_index]["title"]:
+                self.notes[self.current_note_index]["title"] = text
+                updated_at = datetime.now().isoformat()
+                self.notes[self.current_note_index]["updated_at"] = updated_at
+                
+                # 更新数据库
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE notes SET title = ?, updated_at = ? WHERE id = ?
+                ''', (text, updated_at, self.notes[self.current_note_index]["id"]))
+                conn.commit()
+                conn.close()
+                
+                self.update_notes_list_item(self.current_note_index)
+                self.save_notes()
+
     def update_note(self):
         """更新笔记内容"""
         if self.current_note_index >= 0 and self.current_note_index < len(self.notes):
-            self.notes[self.current_note_index]["content"] = self.editor.toHtml()
-            self.notes[self.current_note_index]["updated_at"] = datetime.now().isoformat()
-            self.update_notes_list_item(self.current_note_index)
-            self.date_label.setText(self.format_date(self.notes[self.current_note_index]["updated_at"]))
-            self.save_notes()
+            new_content = self.editor.toHtml()
+            # 只有内容真正变化时才更新时间
+            if new_content != self.notes[self.current_note_index]["content"]:
+                self.notes[self.current_note_index]["content"] = new_content
+                updated_at = datetime.now().isoformat()
+                self.notes[self.current_note_index]["updated_at"] = updated_at
+                
+                # 更新数据库
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE notes SET content = ?, updated_at = ? WHERE id = ?
+                ''', (new_content, updated_at, self.notes[self.current_note_index]["id"]))
+                conn.commit()
+                conn.close()
+                
+                self.update_notes_list_item(self.current_note_index)
+                self.date_label.setText(self.format_date(updated_at))
+                self.save_notes()
     
     def delete_note(self):
         """删除笔记"""
         if self.current_note_index >= 0 and self.current_note_index < len(self.notes):
+            note_id = self.notes[self.current_note_index]["id"]
+            
+            # 从数据库删除
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+            conn.commit()
+            conn.close()
+            
             self.notes.pop(self.current_note_index)
             self.current_note_index = -1
             self.update_notes_list()
@@ -1018,25 +1119,36 @@ class NotesApp(QMainWindow):
     # ----------------------------------------------------------------
     
     def load_notes(self):
-        """加载笔记数据"""
-        if os.path.exists(self.notes_file):
-            try:
-                with open(self.notes_file, 'r', encoding='utf-8') as f:
-                    self.notes = json.load(f)
-                self.update_notes_list()
-            except Exception as e:
-                print(f"加载笔记失败: {e}")
+        """从数据库加载笔记"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM notes ORDER BY updated_at DESC")
+            rows = cursor.fetchall()
+            
+            self.notes = []
+            for row in rows:
+                self.notes.append({
+                    "id": row[0],
+                    "title": row[1],
+                    "content": row[2],
+                    "created_at": row[3],
+                    "updated_at": row[4]
+                })
+            
+            conn.close()
+            
+            if not self.notes:
                 self.new_note()
-        else:
+            else:
+                self.update_notes_list()
+        except Exception as e:
+            print(f"加载笔记失败: {e}")
             self.new_note()
     
     def save_notes(self):
-        """保存笔记数据"""
-        try:
-            with open(self.notes_file, 'w', encoding='utf-8') as f:
-                json.dump(self.notes, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"保存笔记失败: {e}")
+        """保存笔记到数据库（保持兼容，实际操作已在各方法中完成）"""
+        pass
     
     def closeEvent(self, event):
         """窗口关闭事件"""
