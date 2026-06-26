@@ -47,6 +47,10 @@ pip install pyinstaller
 **方式一：使用 spec 文件打包（推荐）**
 
 ```bash
+# Windows (使用虚拟环境)
+.\.venv\Scripts\python.exe -m PyInstaller main.spec
+
+# 或直接使用 pyinstaller
 pyinstaller main.spec
 ```
 
@@ -63,7 +67,7 @@ pyinstaller --onefile --windowed --add-data "notes.db;." main.py
 ```
 Winnote/
 ├── dist/
-│   └── main.exe          # 可分发的 exe 文件
+│   └── WinNote-1.0.1.exe  # 可分发的 exe 文件（版本号自动生成）
 ├── build/                # 临时构建文件（可删除）
 ├── main.py               # 源代码
 ├── main.spec             # 打包配置文件
