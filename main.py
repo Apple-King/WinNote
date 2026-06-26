@@ -11,9 +11,9 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QTextEdit,
-    QLineEdit, QLabel, QStyleFactory, QPushButton, QSizePolicy
+    QLineEdit, QLabel, QStyleFactory, QPushButton, QSizePolicy, QFrame
 )
-from PyQt6.QtGui import QTextCharFormat, QAction, QFont, QTextDocument, QIcon, QPixmap, QImage
+from PyQt6.QtGui import QTextCharFormat, QAction, QFont, QTextDocument, QIcon, QPixmap, QImage, QDrag, QTextCursor, QKeySequence
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QBuffer, QIODevice
 from PIL import Image, ImageDraw
 
@@ -48,8 +48,13 @@ TOOLBAR_HEIGHT = 44
 BUTTON_SIZE = 36
 PREVIEW_MAX_LENGTH = 8
 
+# 字体大小设置
+MIN_FONT_SIZE = 10
+MAX_FONT_SIZE = 32
+DEFAULT_FONT_SIZE = 15
+
 # 软件版本
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 # =================================================================
 # 翻译系统
@@ -88,6 +93,9 @@ TRANSLATIONS = {
         'tooltip_bold': 'Bold (Ctrl+B)',
         'tooltip_italic': 'Italic (Ctrl+I)',
         'tooltip_strikethrough': 'Strikethrough (Ctrl+S)',
+        # 'tooltip_font_increase': 'Increase font size',
+        # 'tooltip_font_decrease': 'Decrease font size',
+        'placeholder_note_search': 'Search in note...',
     },
     'zh': {
         # 菜单
@@ -114,6 +122,9 @@ TRANSLATIONS = {
         'tooltip_bold': '加粗 (Ctrl+B)',
         'tooltip_italic': '斜体 (Ctrl+I)',
         'tooltip_strikethrough': '删除线 (Ctrl+S)',
+        # 'tooltip_font_increase': '增大字体',
+        # 'tooltip_font_decrease': '减小字体',
+        'placeholder_note_search': '在笔记中搜索...',
     }
 }
 
@@ -153,6 +164,20 @@ STYLES = {
             border: 1px solid #e5e5ea;
             border-radius: 8px;
             padding: 8px 12px;
+            font-size: 13px;
+            color: #1c1c1e;
+        }
+        QLineEdit:focus {
+            border: 1px solid #8e8e93;
+            outline: none;
+        }
+    """,
+    'note_search': """
+        QLineEdit {
+            background-color: white;
+            border: 1px solid #d1d1d6;
+            border-radius: 6px;
+            padding: 6px 10px;
             font-size: 13px;
             color: #1c1c1e;
         }
@@ -217,6 +242,8 @@ STYLES = {
             border-radius: 6px;
             color: #3a3a3c;
             padding: 0px;
+            min-width: 36px;
+            min-height: 36px;
         }
         QPushButton:hover {
             background-color: #e5e5ea;
@@ -224,6 +251,9 @@ STYLES = {
         QPushButton:checked {
             background-color: #3a3a3c;
             color: white;
+        }
+        QPushButton:pressed {
+            background-color: #c7c7cc;
         }
     """,
     'title_input': """
@@ -254,9 +284,10 @@ STYLES = {
         QTextEdit {
             border: none;
             background-color: transparent;
-            font-size: 15px;
             line-height: 1.6;
             color: #1c1c1e;
+            selection-background-color: #c7c7cc;
+            selection-color: #1c1c1e;
         }
         QTextEdit:focus {
             outline: none;
@@ -292,30 +323,109 @@ STYLES = {
 # =================================================================
 
 class NoteListWidget(QListWidget):
-    """自定义笔记列表部件"""
+    """自定义笔记列表部件，支持拖动排序"""
     
     note_delete_requested = pyqtSignal(int)  # 删除请求信号
+    note_order_changed = pyqtSignal(list)     # 顺序变化信号
+    note_pin_requested = pyqtSignal(int)      # 置顶请求信号
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 启用拖放功能
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+    
+    def startDrag(self, supportedActions):
+        """开始拖动时，创建自定义的拖动视觉效果"""
+        # 获取当前选中的item
+        item = self.currentItem()
+        if not item:
+            return
+        
+        # 获取对应的widget
+        widget = self.itemWidget(item)
+        if not widget:
+            return super().startDrag(supportedActions)
+        
+        # 创建拖动对象
+        drag = QDrag(self)
+        
+        # 创建带背景的pixmap
+        size = widget.size()
+        pixmap = QPixmap(size)
+        
+        # 填充白色背景
+        pixmap.fill(Qt.GlobalColor.white)
+        
+        # 使用QPainter绘制内容，确保视觉效果正确
+        from PyQt6.QtGui import QPainter
+        painter = QPainter(pixmap)
+        
+        # 绘制widget到pixmap
+        widget.render(painter)
+        painter.end()
+        
+        # 设置拖动 pixmap
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(pixmap.rect().center())
+        
+        # 创建mime数据
+        mime_data = self.mimeData([item])
+        drag.setMimeData(mime_data)
+        
+        # 执行拖动
+        drag.exec(supportedActions)
+    
+    def dropEvent(self, event):
+        """处理放置事件，实现拖动排序"""
+        # 保存原始顺序的ID列表
+        original_ids = []
+        for i in range(self.count()):
+            item = self.item(i)
+            if item:
+                original_ids.append(item.data(Qt.ItemDataRole.UserRole))
+        
+        # 执行默认的放置操作
+        super().dropEvent(event)
+        
+        # 获取新的顺序
+        new_ids = []
+        for i in range(self.count()):
+            item = self.item(i)
+            if item:
+                new_ids.append(item.data(Qt.ItemDataRole.UserRole))
+        
+        # 如果顺序发生了变化，发射信号
+        if original_ids != new_ids:
+            self.note_order_changed.emit(new_ids)
 
 
 class NoteListItem(QWidget):
     """自定义笔记列表项组件"""
     
     delete_clicked = None  # 删除信号
+    pin_clicked = None     # 置顶信号
     
-    def __init__(self, title, preview, date_text, parent=None):
+    def __init__(self, title, preview, date_text, is_pinned=False, parent=None):
         super().__init__(parent)
-        self._setup_ui(title, preview, date_text)
+        self.is_pinned = is_pinned  # 保存置顶状态
+        # 设置背景色，确保拖动时有底色
+        self.setAutoFillBackground(True)
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), Qt.GlobalColor.white)
+        self.setPalette(palette)
+        self._setup_ui(title, preview, date_text, is_pinned)
     
-    def _setup_ui(self, title, preview, date_text):
+    def _setup_ui(self, title, preview, date_text, is_pinned=False):
         """初始化UI组件"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 8, 16, 8)
         layout.setSpacing(2)
         
-        # 标题行容器（水平布局：标题 + 省略号按钮）
+        # 标题行容器（水平布局：标题 + 置顶按钮 + 省略号按钮）
         title_container = QWidget()
         title_layout = QHBoxLayout(title_container)
         title_layout.setContentsMargins(0, 0, 0, 0)
@@ -329,6 +439,26 @@ class NoteListItem(QWidget):
         self.title_label.setMaximumHeight(18)
         self.title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         title_layout.addWidget(self.title_label)
+        
+        # 置顶按钮
+        self.pin_btn = QPushButton("📌" if is_pinned else "📍")
+        self.pin_btn.setFont(QFont("Arial", 10))
+        self.pin_btn.setFixedSize(20, 16)
+        self.pin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        pin_color = "#ff3b30" if is_pinned else "#aeaeb2"
+        self.pin_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                border: none;
+                color: {pin_color};
+                padding: 0px;
+            }}
+            QPushButton:hover {{
+                color: #ff3b30;
+            }}
+        """)
+        self.pin_btn.clicked.connect(self._handle_pin)
+        title_layout.addWidget(self.pin_btn)
         
         # 省略号按钮
         self.more_btn = QPushButton("•••")
@@ -406,6 +536,23 @@ class NoteListItem(QWidget):
         # 显示菜单
         menu.exec(pos)
     
+    def _handle_pin(self):
+        """处理置顶"""
+        # 获取父级容器
+        container = self.parent()
+        if container and container.parent():
+            # 获取列表部件
+            list_widget = container.parent()
+            if hasattr(list_widget, 'count'):
+                # 找到列表项
+                for i in range(list_widget.count()):
+                    item = list_widget.item(i)
+                    if list_widget.itemWidget(item) == self:
+                        # 发射信号通知主窗口
+                        if hasattr(list_widget, 'note_pin_requested'):
+                            list_widget.note_pin_requested.emit(i)
+                        break
+    
     def _handle_delete(self):
         """处理删除"""
         # 获取父级容器
@@ -427,6 +574,23 @@ class NoteListItem(QWidget):
         self.title_label.setText(title or tr('untitled'))
         self.preview_label.setText(preview or "")
         self.date_label.setText(date_text)
+    
+    def update_pin_status(self, is_pinned):
+        """更新置顶状态"""
+        self.is_pinned = is_pinned
+        self.pin_btn.setText("📌" if is_pinned else "📍")
+        pin_color = "#ff3b30" if is_pinned else "#aeaeb2"
+        self.pin_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                border: none;
+                color: {pin_color};
+                padding: 0px;
+            }}
+            QPushButton:hover {{
+                color: #ff3b30;
+            }}
+        """)
 
 
 # =================================================================
@@ -440,6 +604,11 @@ class NotesApp(QMainWindow):
         super().__init__()
         self.notes = []
         self.current_note_index = -1
+        # self.current_font_size = DEFAULT_FONT_SIZE  # 字体大小功能暂时注释（待修复）
+        
+        # 搜索功能相关变量
+        self.search_match_count = 0  # 搜索匹配项总数
+        self.search_current_index = 0  # 当前选中的匹配项索引
         # 获取应用程序所在目录（兼容打包后的exe）
         if getattr(sys, 'frozen', False):
             # 打包后的 exe，使用 exe 所在目录
@@ -469,9 +638,20 @@ class NotesApp(QMainWindow):
                 title TEXT NOT NULL DEFAULT '',
                 content TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                is_pinned INTEGER NOT NULL DEFAULT 0,
+                pinned_at TEXT
             )
         ''')
+        
+        # 检查并添加新字段（兼容旧数据库）
+        try:
+            cursor.execute("SELECT is_pinned FROM notes LIMIT 1")
+        except sqlite3.OperationalError:
+            # 字段不存在，添加字段
+            cursor.execute("ALTER TABLE notes ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0")
+            cursor.execute("ALTER TABLE notes ADD COLUMN pinned_at TEXT")
+            conn.commit()
         
         # 检查是否需要迁移JSON数据
         cursor.execute("SELECT COUNT(*) FROM notes")
@@ -529,6 +709,12 @@ class NotesApp(QMainWindow):
         self._create_sidebar()
         self._create_editor_area()
         self.create_menu_bar()
+        
+        # 添加 Ctrl+F 快捷键
+        self.search_shortcut = QAction(self)
+        self.search_shortcut.setShortcut(QKeySequence("Ctrl+F"))
+        self.search_shortcut.triggered.connect(self.show_search_box)
+        self.addAction(self.search_shortcut)
     
     def _set_window_icon(self):
         """设置窗口图标 - 生成一个简洁的笔记图标"""
@@ -616,7 +802,25 @@ class NotesApp(QMainWindow):
         self.notes_list.setStyleSheet(STYLES['notes_list'])
         self.notes_list.itemClicked.connect(self.select_note)
         self.notes_list.note_delete_requested.connect(self.delete_note_by_index)
+        self.notes_list.note_order_changed.connect(self._handle_order_changed)
+        self.notes_list.note_pin_requested.connect(self.toggle_pin)
         self.sidebar_layout.addWidget(self.notes_list)
+    
+    def _handle_order_changed(self, new_order_ids):
+        """处理笔记顺序变化"""
+        # 根据新的ID顺序重新排列 notes 列表
+        notes_dict = {note["id"]: note for note in self.notes}
+        self.notes = [notes_dict[note_id] for note_id in new_order_ids if note_id in notes_dict]
+        
+        # 更新数据库中的顺序（更新 updated_at 以触发重新排序）
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        for note in self.notes:
+            cursor.execute('''
+                UPDATE notes SET updated_at = ? WHERE id = ?
+            ''', (note["updated_at"], note["id"]))
+        conn.commit()
+        conn.close()
     
     def _create_editor_area(self):
         """创建编辑器区域"""
@@ -678,6 +882,20 @@ class NotesApp(QMainWindow):
         button_layout.addWidget(self.bold_btn)
         button_layout.addWidget(self.italic_btn)
         button_layout.addWidget(self.strikethrough_btn)
+        
+        # # 添加分隔符
+        # separator = QFrame()
+        # separator.setFrameShape(QFrame.Shape.VLine)
+        # separator.setStyleSheet("border: none; background-color: #d1d1d6; max-width: 1px; margin: 8px 12px;")
+        # button_layout.addWidget(separator)
+        
+        # # 字体大小按钮
+        # self.font_decrease_btn = self._create_font_size_button("A-", 'decrease')
+        # self.font_increase_btn = self._create_font_size_button("A+", 'increase')
+        
+        # button_layout.addWidget(self.font_decrease_btn)
+        # button_layout.addWidget(self.font_increase_btn)
+        
         button_layout.addStretch()
         
         # 垂直居中
@@ -720,6 +938,63 @@ class NotesApp(QMainWindow):
         
         return btn
     
+    # # 字体大小功能暂时注释（待修复）
+    # def _create_font_size_button(self, text, action):
+    #     """创建字体大小按钮"""
+    #     btn = QPushButton(text)
+    #     btn.setFont(QFont(*FONTS['toolbar']))
+    #     btn.setFixedSize(BUTTON_SIZE, BUTTON_SIZE)
+    #     btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    #     btn.setStyleSheet(STYLES['toolbar_btn'])
+    #     
+    #     # 设置鼠标悬停提示
+    #     if action == 'increase':
+    #         btn.setToolTip(tr('tooltip_font_increase'))
+    #     elif action == 'decrease':
+    #         btn.setToolTip(tr('tooltip_font_decrease'))
+    #     
+    #     # 信号连接
+    #     if action == 'increase':
+    #         btn.clicked.connect(self.increase_font_size)
+    #     elif action == 'decrease':
+    #         btn.clicked.connect(self.decrease_font_size)
+    #     
+    #     return btn
+    # 
+    # def increase_font_size(self):
+    #     """增大字体大小"""
+    #     if self.current_font_size < MAX_FONT_SIZE:
+    #         self.current_font_size += 1
+    #         self._update_editor_font()
+    # 
+    # def decrease_font_size(self):
+    #     """减小字体大小"""
+    #     if self.current_font_size > MIN_FONT_SIZE:
+    #         self.current_font_size -= 1
+    #         self._update_editor_font()
+    # 
+    # def _update_editor_font(self):
+    #     """更新编辑器字体大小"""
+    #     # 创建新字体
+    #     new_font = QFont(*FONTS['editor'])
+    #     new_font.setPointSize(self.current_font_size)
+    #     
+    #     # 更新编辑器字体
+    #     self.editor.setFont(new_font)
+    #     
+    #     # 更新文档默认样式
+    #     cursor = self.editor.textCursor()
+    #     if cursor.hasSelection():
+    #         # 如果有选中文本，只更新选中文本的字体
+    #         pass
+    #     else:
+    #         # 更新整个文档的默认字体
+    #         self.editor.document().setDefaultFont(new_font)
+    #     
+    #     # 恢复焦点
+    #     self.editor.setFocus()
+    #     self.editor.viewport().update()
+    
     def _create_editor_content(self):
         """创建编辑器内容区域"""
         self.content_widget = QWidget()
@@ -748,11 +1023,251 @@ class NotesApp(QMainWindow):
         self.editor.currentCharFormatChanged.connect(self.update_format_indicators)
         self.content_layout.addWidget(self.editor, 1)
         
+        # 搜索框容器（悬浮显示在右上角，默认隐藏）
+        self.search_container = QWidget(self.content_widget)  # 设置父容器
+        self.search_container.setFixedSize(280, 36)
+        self.search_container.setVisible(False)  # 默认隐藏
+        
+        # 搜索框内部布局
+        search_layout = QHBoxLayout(self.search_container)
+        search_layout.setContentsMargins(6, 4, 6, 4)
+        search_layout.setSpacing(4)
+        
+        # 搜索框
+        self.note_search_box = QLineEdit()
+        self.note_search_box.setPlaceholderText(tr('placeholder_note_search'))
+        self.note_search_box.setFixedWidth(180)
+        self.note_search_box.setStyleSheet(STYLES['note_search'])
+        self.note_search_box.textChanged.connect(self.highlight_search)
+        self.note_search_box.returnPressed.connect(self.find_next)
+        
+        # 匹配数量标签
+        self.search_count_label = QLabel()
+        self.search_count_label.setStyleSheet("""
+            QLabel {
+                color: #8e8e93;
+                font-size: 12px;
+                padding: 0px;
+                background-color: transparent;
+            }
+        """)
+        self.search_count_label.setFixedWidth(30)
+        self.search_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # 关闭按钮
+        self.search_close_btn = QPushButton("✕")
+        self.search_close_btn.setFixedSize(20, 20)
+        self.search_close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                color: #8e8e93;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                color: #1c1c1e;
+            }
+        """)
+        self.search_close_btn.clicked.connect(self.hide_search_box)
+        
+        search_layout.addWidget(self.note_search_box)
+        search_layout.addWidget(self.search_count_label)
+        search_layout.addWidget(self.search_close_btn)
+        
+        # 容器样式（带边框的白色背景，阴影效果）
+        self.search_container.setStyleSheet("""
+            background-color: white;
+            border: 1px solid #d1d1d6;
+            border-radius: 8px;
+        """)
+        
         self.editor_layout.addWidget(self.content_widget)
     
     def _handle_editor_change(self):
         """处理编辑器内容变化"""
         self.update_note()
+    
+    # ----------------------------------------------------------------
+    # 笔记搜索功能
+    # ----------------------------------------------------------------
+    
+    def show_search_box(self):
+        """显示/隐藏搜索框"""
+        if self.search_container.isVisible():
+            # 搜索框已经显示，关闭它
+            self.hide_search_box()
+        else:
+            # 显示搜索框（设置在右上角悬浮）
+            self.search_container.setVisible(True)
+            self.search_container.raise_()  # 提升到最上层
+            
+            # 计算搜索框位置（右上角）
+            # 使用 QWidget 的 geometry 来设置位置
+            content_rect = self.content_widget.geometry()
+            search_x = content_rect.width() - self.search_container.width() - 10  # 右边距 10px
+            search_y = 0  # 顶部
+            self.search_container.move(search_x, search_y)
+            
+            self.note_search_box.clear()
+            self.note_search_box.setFocus()
+            self.highlight_search("")
+    
+    def hide_search_box(self):
+        """隐藏搜索框"""
+        self.note_search_box.clear()
+        self.search_count_label.setText("")  # 清除计数标签
+        self.highlight_search("")  # 清除高亮
+        self.search_container.setVisible(False)  # 隐藏搜索框
+        self.search_match_count = 0
+        self.search_current_index = 0
+        self.editor.setFocus()
+    
+    def highlight_search(self, text):
+        """高亮搜索结果"""
+        # 清除所有现有的高亮格式
+        self._clear_search_highlight()
+        
+        # 恢复默认格式 - 移动光标到开头清除选择
+        cursor = self.editor.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        self.editor.setTextCursor(cursor)
+        
+        if not text:
+            self.search_match_count = 0
+            self.search_current_index = 0
+            self.search_count_label.setText("")  # 清除计数标签
+            self.note_search_box.setPlaceholderText(tr('placeholder_note_search'))
+            return
+        
+        try:
+            # 使用正则表达式实现大小写不敏感搜索
+            import re
+            pattern = re.compile(re.escape(text), re.IGNORECASE)
+            
+            # 获取文档文本
+            document = self.editor.document()
+            text_content = document.toPlainText()
+            
+            # 设置高亮颜色
+            highlight_format = QTextCharFormat()
+            highlight_format.setBackground(Qt.GlobalColor.yellow)
+            
+            # 找到所有匹配项并高亮
+            match_list = list(pattern.finditer(text_content))
+            self.search_match_count = len(match_list)
+            self.search_current_index = 0
+            
+            for match in match_list:
+                start_pos = match.start()
+                end_pos = match.end()
+                
+                # 创建光标并选择匹配文本
+                cursor = QTextCursor(document)
+                cursor.setPosition(start_pos)
+                cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, end_pos - start_pos)
+                cursor.mergeCharFormat(highlight_format)
+            
+            # 更新计数标签显示匹配数量
+            if self.search_match_count > 0:
+                self.search_count_label.setText(f"0/{self.search_match_count}")
+            else:
+                self.search_count_label.setText("")
+            
+            # 回到开头
+            cursor = self.editor.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            self.editor.setTextCursor(cursor)
+            
+        except Exception as e:
+            print(f"搜索错误: {e}")
+    
+    def _clear_search_highlight(self):
+        """清除所有搜索高亮（保留其他文本格式）"""
+        document = self.editor.document()
+        
+        # 创建一个只设置背景色的格式（透明），其他格式保持不变
+        cursor = document.find("")  # 创建一个空的光标
+        cursor = QTextCursor(document)
+        
+        # 遍历文档所有块
+        block = document.begin()
+        while block.isValid():
+            block_cursor = QTextCursor(block)
+            block_cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+            
+            # 只清除背景色，不改变其他格式
+            clear_format = QTextCharFormat()
+            clear_format.setBackground(Qt.GlobalColor.transparent)
+            block_cursor.mergeCharFormat(clear_format)
+            
+            block = block.next()
+        
+        # 同时处理文档末尾可能的额外内容
+        cursor = QTextCursor(document)
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        
+        # 只清除背景色
+        clear_format = QTextCharFormat()
+        clear_format.setBackground(Qt.GlobalColor.transparent)
+        cursor.mergeCharFormat(clear_format)
+    
+    def find_next(self):
+        """查找下一个"""
+        text = self.note_search_box.text()
+        if text and self.search_match_count > 0:
+            try:
+                # 使用正则表达式查找下一个匹配项
+                import re
+                pattern = re.compile(re.escape(text), re.IGNORECASE)
+                
+                # 获取当前光标位置之后的文本
+                document = self.editor.document()
+                cursor = self.editor.textCursor()
+                current_pos = cursor.position()
+                text_content = document.toPlainText()
+                remaining_text = text_content[current_pos:]
+                
+                # 在剩余文本中查找
+                match = pattern.search(remaining_text)
+                if match:
+                    # 找到，跳转到该位置
+                    new_pos = current_pos + match.start()
+                    cursor.setPosition(new_pos)
+                    cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, len(text))
+                    self.editor.setTextCursor(cursor)
+                    # 更新当前索引
+                    self.search_current_index = (self.search_current_index + 1) % self.search_match_count
+                else:
+                    # 没找到，回到开头继续找
+                    cursor = self.editor.textCursor()
+                    cursor.movePosition(QTextCursor.MoveOperation.Start)
+                    self.editor.setTextCursor(cursor)
+                    
+                    # 再次尝试在全文中查找
+                    full_match = pattern.search(text_content)
+                    if full_match:
+                        cursor.setPosition(full_match.start())
+                        cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, len(text))
+                        self.editor.setTextCursor(cursor)
+                        # 更新当前索引
+                        self.search_current_index = 1
+                
+                # 更新计数标签显示当前索引
+                self.search_count_label.setText(f"{self.search_current_index}/{self.search_match_count}")
+                
+            except Exception as e:
+                print(f"查找错误: {e}")
+    
+    def resizeEvent(self, event):
+        """窗口大小改变时更新搜索框位置"""
+        super().resizeEvent(event)
+        # 如果搜索框可见，更新其位置
+        if hasattr(self, 'search_container') and self.search_container.isVisible():
+            content_rect = self.content_widget.geometry()
+            search_x = content_rect.width() - self.search_container.width() - 10
+            search_y = 0
+            self.search_container.move(search_x, search_y)
     
     # ----------------------------------------------------------------
     # 菜单栏
@@ -960,9 +1475,9 @@ class NotesApp(QMainWindow):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO notes (title, content, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
-        ''', ("", "", now.isoformat(), now.isoformat()))
+            INSERT INTO notes (title, content, created_at, updated_at, is_pinned, pinned_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', ("", "", now.isoformat(), now.isoformat(), 0, None))
         
         note_id = cursor.lastrowid
         conn.commit()
@@ -973,7 +1488,9 @@ class NotesApp(QMainWindow):
             "title": "",
             "content": "",
             "created_at": now.isoformat(),
-            "updated_at": now.isoformat()
+            "updated_at": now.isoformat(),
+            "is_pinned": 0,
+            "pinned_at": None
         }
         
         self.notes.insert(0, note)
@@ -1059,6 +1576,35 @@ class NotesApp(QMainWindow):
             self.date_label.setText("")
             self.save_notes()
     
+    def toggle_pin(self, index):
+        """切换置顶状态"""
+        if index >= 0 and index < len(self.notes):
+            note = self.notes[index]
+            is_pinned = not note.get("is_pinned", False)
+            pinned_at = datetime.now().isoformat() if is_pinned else None
+            
+            # 更新数据库
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE notes SET is_pinned = ?, pinned_at = ? WHERE id = ?
+            ''', (1 if is_pinned else 0, pinned_at, note["id"]))
+            conn.commit()
+            conn.close()
+            
+            # 更新本地数据
+            note["is_pinned"] = is_pinned
+            note["pinned_at"] = pinned_at
+            
+            # 更新置顶按钮显示
+            item_widget = self.notes_list.itemWidget(self.notes_list.item(index))
+            if item_widget and hasattr(item_widget, 'update_pin_status'):
+                item_widget.update_pin_status(is_pinned)
+            
+            # 重新排序并更新列表
+            self._sort_notes()
+            self.update_notes_list()
+    
     def delete_note_by_index(self, index):
         """根据索引删除笔记"""
         if index >= 0 and index < len(self.notes):
@@ -1086,8 +1632,9 @@ class NotesApp(QMainWindow):
             preview = self.get_preview_text(note["content"])
             date_text = self.format_date(note["updated_at"])
             title = note["title"] or tr('untitled')
+            is_pinned = note.get("is_pinned", 0) == 1
             
-            item_widget = NoteListItem(title, preview, date_text)
+            item_widget = NoteListItem(title, preview, date_text, is_pinned)
             list_item = QListWidgetItem()
             list_item.setData(Qt.ItemDataRole.UserRole, note["id"])
             list_item.setSizeHint(QSize(SIDEBAR_WIDTH - 32, 80))
@@ -1109,10 +1656,13 @@ class NotesApp(QMainWindow):
             preview = self.get_preview_text(note["content"])
             date_text = self.format_date(note["updated_at"])
             title = note["title"] or tr('untitled')
+            is_pinned = note.get("is_pinned", 0) == 1
             
             item_widget = self.notes_list.itemWidget(list_item)
             if item_widget:
                 item_widget.update_content(title, preview, date_text)
+                if hasattr(item_widget, 'update_pin_status'):
+                    item_widget.update_pin_status(is_pinned)
     
     # ----------------------------------------------------------------
     # 数据持久化
@@ -1123,20 +1673,29 @@ class NotesApp(QMainWindow):
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM notes ORDER BY updated_at DESC")
+            cursor.execute("SELECT * FROM notes")
             rows = cursor.fetchall()
             
             self.notes = []
             for row in rows:
+                # 兼容旧数据库（字段可能不存在）
+                is_pinned = row[5] if len(row) > 5 else 0
+                pinned_at = row[6] if len(row) > 6 else None
+                
                 self.notes.append({
                     "id": row[0],
                     "title": row[1],
                     "content": row[2],
                     "created_at": row[3],
-                    "updated_at": row[4]
+                    "updated_at": row[4],
+                    "is_pinned": is_pinned,
+                    "pinned_at": pinned_at
                 })
             
             conn.close()
+            
+            # 排序笔记
+            self._sort_notes()
             
             if not self.notes:
                 self.new_note()
@@ -1145,6 +1704,32 @@ class NotesApp(QMainWindow):
         except Exception as e:
             print(f"加载笔记失败: {e}")
             self.new_note()
+    
+    def _sort_notes(self):
+        """排序笔记：置顶笔记按置顶时间排序，未置顶按更新时间排序"""
+        pinned_notes = []
+        unpinned_notes = []
+        
+        for note in self.notes:
+            if note.get("is_pinned", 0) == 1:
+                pinned_notes.append(note)
+            else:
+                unpinned_notes.append(note)
+        
+        # 置顶笔记按置顶时间排序（最新的置顶在最上面）
+        pinned_notes.sort(
+            key=lambda x: x.get("pinned_at") or "",
+            reverse=True
+        )
+        
+        # 未置顶笔记按更新时间排序
+        unpinned_notes.sort(
+            key=lambda x: x.get("updated_at") or "",
+            reverse=True
+        )
+        
+        # 合并：置顶笔记在最上面
+        self.notes = pinned_notes + unpinned_notes
     
     def save_notes(self):
         """保存笔记到数据库（保持兼容，实际操作已在各方法中完成）"""
